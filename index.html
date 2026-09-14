@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clean Copy - Image Metadata Inspector &amp; Stripper</title>
+<style>
+  :root {
+    --paper: #E9ECEA;
+    --ink: #16211D;
+    --emerald: #0F7B5B;
+    --emerald-dark: #0A5942;
+    --mist: #7C8681;
+    --line: #C7CECB;
+    --white: #FFFFFF;
+    --warn: #8A5A14;
+    --warn-bg: #F6EBD6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 48px 24px 80px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 1.65rem; font-weight: 700; letter-spacing: -0.01em; }
+  header p { margin-top: 8px; color: var(--mist); font-size: 0.95rem; max-width: 58ch; line-height: 1.5; }
+
+  #dropzone {
+    border: 2px dashed var(--emerald);
+    border-radius: 6px;
+    background: var(--white);
+    padding: 52px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  #dropzone.dragover { background: #E3F2EC; border-color: var(--emerald-dark); }
+  #dropzone .big { font-size: 1.15rem; font-weight: 600; color: var(--emerald-dark); }
+  #dropzone .sub { margin-top: 6px; font-size: 0.88rem; color: var(--mist); }
+  #fileinput { display: none; }
+  #dropzone:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  #results { margin-top: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+  .card {
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .card-head { display: flex; align-items: center; gap: 16px; padding: 14px 16px; }
+  .card-head img {
+    width: 64px; height: 64px; object-fit: cover; border-radius: 4px;
+    background: var(--paper); flex-shrink: 0;
+  }
+  .card-head .info { flex: 1; min-width: 0; }
+  .card-head .name { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-head .meta { font-size: 0.83rem; color: var(--mist); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  .meta-list { border-top: 1px solid var(--line); padding: 6px 16px 14px; }
+  .meta-row { padding: 9px 0; border-bottom: 1px solid #EFF2F0; }
+  .meta-row:last-child { border-bottom: none; }
+  .meta-row-top { display: flex; align-items: baseline; gap: 10px; }
+  .meta-row-top input[type=checkbox] { accent-color: var(--emerald); width: 15px; height: 15px; position: relative; top: 2px; cursor: pointer; }
+  .meta-row-top label { cursor: pointer; font-size: 0.92rem; font-weight: 600; }
+  .meta-row-top .size { color: var(--mist); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+  .meta-row-top .flag {
+    font-size: 0.75rem; font-weight: 600; color: var(--warn);
+    background: var(--warn-bg); border-radius: 3px; padding: 1px 7px;
+  }
+  .meta-row-top .flag.ai { color: #7A1F1F; background: #F5DEDE; }
+  .meta-row .desc { font-size: 0.82rem; color: var(--mist); margin: 3px 0 0 25px; line-height: 1.45; }
+  .meta-row details { margin: 6px 0 0 25px; font-size: 0.83rem; }
+  .meta-row summary { cursor: pointer; color: var(--emerald-dark); font-weight: 600; }
+  .meta-row table { border-collapse: collapse; margin-top: 8px; width: 100%; }
+  .meta-row td { padding: 3px 12px 3px 0; vertical-align: top; font-variant-numeric: tabular-nums; }
+  .meta-row td:first-child { color: var(--mist); white-space: nowrap; width: 1%; }
+  .meta-row pre {
+    margin-top: 8px; padding: 10px; background: var(--paper); border-radius: 4px;
+    white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto;
+    font-size: 0.78rem;
+  }
+  .none-found { padding: 12px 16px; border-top: 1px solid var(--line); font-size: 0.88rem; color: var(--mist); }
+
+  .card-actions {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border-top: 1px solid var(--line); padding: 12px 16px; background: #F7F9F8;
+  }
+  button, .btn {
+    font: inherit; font-size: 0.87rem; font-weight: 600; border-radius: 4px;
+    padding: 8px 14px; cursor: pointer; border: 1px solid transparent;
+  }
+  .btn-primary { color: var(--white); background: var(--emerald); }
+  .btn-primary:hover { background: var(--emerald-dark); }
+  .btn-quiet { color: var(--emerald-dark); background: transparent; border-color: var(--line); }
+  .btn-quiet:hover { background: #EDF3F0; }
+  .btn-danger { color: #7A1F1F; background: transparent; border-color: #D8B9B9; }
+  .btn-danger:hover { background: #F5DEDE; }
+  button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .card-actions .note { font-size: 0.78rem; color: var(--mist); flex-basis: 100%; }
+
+  footer { margin-top: 48px; font-size: 0.82rem; color: var(--mist); line-height: 1.6; max-width: 62ch; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Clean Copy</h1>
+    <p>Inspect supported metadata blocks in JPG, PNG and WebP images, then choose which blocks to remove. Selected removal preserves compressed image data without re-encoding. Your files stay in your browser.</p>
+  </header>
+
+  <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop images">
+    <div class="big">Drop images here</div>
+    <div class="sub">or click to choose files · JPG, PNG, WebP</div>
+  </div>
+  <input type="file" id="fileinput" accept="image/*" multiple>
+
+  <div id="results"></div>
+
+  <footer>
+    <p>"Download selected removed" removes the checked blocks without re-encoding image data. Removing orientation or color information can change how an image displays. "Re-encode copy" draws the image through a canvas and exports a new PNG or JPEG, which can change quality, color, transparency or animation. Browser encoders may add basic format metadata. This is not a complete metadata audit or a watermark remover. Content Credentials record provenance; keep an original and preserve attribution and required disclosures when sharing.</p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const dropzone = document.getElementById('dropzone');
+  const fileinput = document.getElementById('fileinput');
+  const results = document.getElementById('results');
+
+  dropzone.addEventListener('click', () => fileinput.click());
+  dropzone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileinput.click(); }
+  });
+  fileinput.addEventListener('change', () => { handleFiles(fileinput.files); fileinput.value = ''; });
+  ['dragenter','dragover'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('dragover'); }));
+  ['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('dragover'); }));
+  dropzone.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
+
+  function handleFiles(list) {
+    Array.from(list).forEach(f => { if (f.type.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(f.name)) processFile(f); });
+  }
+
+  function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(2) + ' MB';
+  }
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  /* ---------------- EXIF (TIFF) decoding for display ---------------- */
+  const TAGS = {
+    0x010F:'Make', 0x0110:'Camera model', 0x0112:'Orientation', 0x0131:'Software',
+    0x0132:'Modified', 0x013B:'Artist', 0x8298:'Copyright', 0x011A:'X resolution',
+    0x011B:'Y resolution', 0x0100:'Image width', 0x0101:'Image height',
+    0x829A:'Exposure time', 0x829D:'F-number', 0x8827:'ISO', 0x8822:'Exposure program',
+    0x9003:'Date taken', 0x9004:'Date digitized', 0x920A:'Focal length',
+    0x9209:'Flash', 0xA002:'Pixel width', 0xA003:'Pixel height',
+    0xA430:'Camera owner', 0xA431:'Body serial number', 0xA433:'Lens make',
+    0xA434:'Lens model', 0xA420:'Unique image ID', 0x9286:'User comment'
+  };
+  const GPSTAGS = { 0x0001:'latRef', 0x0002:'lat', 0x0003:'lonRef', 0x0004:'lon', 0x0006:'altitude', 0x001D:'dateStamp' };
+
+  function decodeExif(u8) {
+    // u8 starts at TIFF header
+    const rows = [];
+    try {
+      const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+      const little = dv.getUint16(0) === 0x4949;
+      const g16 = o => dv.getUint16(o, little);
+      const g32 = o => dv.getUint32(o, little);
+      const gi32 = o => dv.getInt32(o, little);
+      if (g16(2) !== 42) return rows;
+      const SZ = {1:1,2:1,3:2,4:4,5:8,7:1,9:4,10:8};
+
+      function readVal(type, count, off) {
+        if (type === 2) {
+          let s = '';
+          for (let k = 0; k < count && k < 256; k++) { const c = u8[off+k]; if (!c) break; s += String.fromCharCode(c); }
+          return s.trim();
+        }
+        const out = [];
+        const lim = Math.min(count, 8);
+        for (let k = 0; k < lim; k++) {
+          if (type === 3) out.push(g16(off + 2*k));
+          else if (type === 4) out.push(g32(off + 4*k));
+          else if (type === 9) out.push(gi32(off + 4*k));
+          else if (type === 5) { const n = g32(off+8*k), d = g32(off+8*k+4); out.push(d ? n/d : 0); }
+          else if (type === 10) { const n = gi32(off+8*k), d = gi32(off+8*k+4); out.push(d ? n/d : 0); }
+          else if (type === 1 || type === 7) out.push(u8[off+k]);
+        }
+        return out;
+      }
+
+      const gpsRaw = {};
+      function readIFD(start, isGPS) {
+        if (start <= 0 || start + 2 > u8.length) return;
+        const n = g16(start);
+        if (n > 300) return;
+        for (let i = 0; i < n; i++) {
+          const e = start + 2 + i * 12;
+          if (e + 12 > u8.length) return;
+          const tag = g16(e), type = g16(e+2), count = g32(e+4);
+          const unit = SZ[type] || 1;
+          const total = unit * count;
+          const off = total <= 4 ? e + 8 : g32(e + 8);
+          if (off + Math.min(total, 2048) > u8.length) continue;
+          if (!isGPS && tag === 0x8769) { readIFD(g32(e+8), false); continue; }
+          if (!isGPS && tag === 0x8825) { readIFD(g32(e+8), true); continue; }
+          if (isGPS) {
+            const gname = GPSTAGS[tag];
+            if (gname) gpsRaw[gname] = readVal(type, count, off);
+            continue;
+          }
+          const name = TAGS[tag];
+          if (!name) continue;
+          let v = readVal(type, count, off);
+          if (Array.isArray(v)) {
+            v = v.map(x => (typeof x === 'number' && !Number.isInteger(x)) ? +x.toFixed(4) : x).join(', ');
+          }
+          if (v !== '' && v !== undefined) rows.push([name, String(v)]);
+        }
+      }
+      readIFD(g32(4), false);
+
+      if (gpsRaw.lat && gpsRaw.lon) {
+        const dms = a => a[0] + (a[1]||0)/60 + (a[2]||0)/3600;
+        let lat = dms(gpsRaw.lat) * ((gpsRaw.latRef||'N')[0] === 'S' ? -1 : 1);
+        let lon = dms(gpsRaw.lon) * ((gpsRaw.lonRef||'E')[0] === 'W' ? -1 : 1);
+        rows.push(['GPS location', lat.toFixed(6) + ', ' + lon.toFixed(6) + '  (!)']);
+      }
+      if (gpsRaw.altitude) rows.push(['GPS altitude', (+gpsRaw.altitude[0]).toFixed(1) + ' m']);
+    } catch (err) { /* tolerate malformed EXIF */ }
+    return rows.slice(0, 40);
+  }
+
+  function exifDetailHTML(u8) {
+    const rows = decodeExif(u8);
+    if (!rows.length) return '';
+    return '<details><summary>Show decoded fields (' + rows.length + ')</summary><table>' +
+      rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join('') +
+      '</table></details>';
+  }
+  function textDetailHTML(label, text) {
+    if (!text) return '';
+    const t = text.length > 6000 ? text.slice(0, 6000) + '\n… (truncated)' : text;
+    return '<details><summary>' + esc(label) + '</summary><pre>' + esc(t) + '</pre></details>';
+  }
+
+  const td = new TextDecoder('utf-8', { fatal: false });
+
+  /* ---------------- JPEG parsing ---------------- */
+  function parseJPEG(u8) {
+    if (u8[0] !== 0xFF || u8[1] !== 0xD8) return null;
+    const items = [];
+    let p = 2;
+    let tailStart = -1;
+    const keepRanges = []; // structural segments we always keep
+    while (p + 4 <= u8.length) {
+      while (u8[p] === 0xFF && u8[p+1] === 0xFF) p++;       // fill bytes
+      if (u8[p] !== 0xFF) break;
+      const marker = u8[p+1];
+      if (marker === 0xDA) { tailStart = p; break; }         // SOS: entropy data follows
+      if (marker === 0xD9) { tailStart = p; break; }         // EOI (empty image)
+      const len = (u8[p+2] << 8) | u8[p+3];
+      const start = p, end = p + 2 + len;
+      if (len < 2 || end > u8.length) break;
+      const seg = { start, end, marker };
+
+      if (marker >= 0xE0 && marker <= 0xEF || marker === 0xFE) {
+        const sig = td.decode(u8.subarray(start + 4, Math.min(start + 4 + 40, end)));
+        classifyJpegSegment(seg, marker, sig, u8, items);
+      } else {
+        keepRanges.push([start, end]);                       // DQT, SOF, DHT, DRI…
+      }
+      p = end;
+    }
+    if (tailStart < 0) return null;
+    return { kind: 'JPEG', items: mergeItems(items), keepRanges, tailStart,
+      rebuild(removedIds) {
+        const parts = [u8.subarray(0, 2)];
+        const all = [];
+        this.keepRanges.forEach(r => all.push({ r, keep: true }));
+        this.items.forEach(it => it.ranges.forEach(r => all.push({ r, keep: !removedIds.has(it.id) })));
+        all.sort((a, b) => a.r[0] - b.r[0]);
+        all.forEach(s => { if (s.keep) parts.push(u8.subarray(s.r[0], s.r[1])); });
+        parts.push(u8.subarray(this.tailStart));
+        return new Blob(parts, { type: 'image/jpeg' });
+      }
+    };
+  }
+
+  function classifyJpegSegment(seg, marker, sig, u8, items) {
+    const payload = (skip) => u8.subarray(seg.start + 4 + skip, seg.end);
+    let it = null;
+    if (marker === 0xE1 && sig.startsWith('Exif')) {
+      it = { id:'exif', label:'EXIF data', checked:true,
+        desc:'Camera/software info, dates, orientation, and possibly GPS location. Removing orientation can change how an image displays.',
+        detail: exifDetailHTML(payload(6)) };
+    } else if (marker === 0xE1 && sig.startsWith('http://ns.adobe.com/xap/')) {
+      const xml = td.decode(u8.subarray(seg.start + 4 + 29, seg.end));
+      const isAI = /c2pa|digitalsourcetype|trainedAlgorithmicMedia|GPTs?|OpenAI/i.test(xml);
+      it = { id:'xmp', label:'XMP metadata', checked:true, flag: isAI ? 'ai' : null,
+        desc:'Adobe-style XML metadata, which can include attribution and digital source information.',
+        detail: textDetailHTML('Show raw XMP', xml) };
+    } else if (marker === 0xEB) {
+      it = { id:'c2pa', label:'Content Credentials (C2PA / JUMBF)', checked:true, flag:'ai',
+        desc:'APP11 blocks can contain Content Credentials or other JUMBF data. Removal can discard provenance; this tool does not validate signatures.' };
+    } else if (marker === 0xE2 && sig.startsWith('ICC_PROFILE')) {
+      it = { id:'icc', label:'ICC color profile', checked:false, flag:'color',
+        desc:'Defines how colors are rendered. Removing it can shift colors slightly - recommended to keep.' };
+    } else if (marker === 0xE0 && sig.startsWith('JFIF')) {
+      it = { id:'jfif', label:'JFIF header', checked:false, flag:'structural',
+        desc:'Basic format header (density info). Harmless - recommended to keep.' };
+    } else if (marker === 0xEE && sig.startsWith('Adobe')) {
+      it = { id:'adobe14', label:'Adobe color transform tag', checked:false, flag:'structural',
+        desc:'Tells decoders how to interpret color channels. Removing it can break colors - keep.' };
+    } else if (marker === 0xED && sig.startsWith('Photoshop')) {
+      it = { id:'irb', label:'Photoshop IRB (IPTC)', checked:true,
+        desc:'Photoshop resource block, often containing IPTC captions/keywords and digital-source tags.' };
+    } else if (marker === 0xFE) {
+      const txt = td.decode(u8.subarray(seg.start + 4, seg.end));
+      it = { id:'comment', label:'Comment', checked:true, desc:'Free-text comment embedded in the file.',
+        detail: textDetailHTML('Show comment', txt) };
+    } else {
+      it = { id:'app' + (marker - 0xE0), label:'APP' + (marker - 0xE0) + ' segment', checked:true,
+        desc:'Vendor-specific metadata block ("' + esc(sig.replace(/[^\x20-\x7E]/g,'').slice(0,20)) + '"). Review before removing.' };
+    }
+    it.ranges = [[seg.start, seg.end]];
+    it.size = seg.end - seg.start;
+    items.push(it);
+  }
+
+  /* ---------------- PNG parsing ---------------- */
+  const PNG_SIG = [0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A];
+  function parsePNG(u8) {
+    for (let i = 0; i < 8; i++) if (u8[i] !== PNG_SIG[i]) return null;
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const items = [];
+    const keepRanges = [];
+    let p = 8;
+    while (p + 12 <= u8.length) {
+      const len = dv.getUint32(p);
+      const type = td.decode(u8.subarray(p + 4, p + 8));
+      const start = p, end = p + 12 + len;
+      if (end > u8.length) break;
+      const data = () => u8.subarray(start + 8, start + 8 + len);
+      let it = null;
+      if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt') {
+        const d = data();
+        let nul = d.indexOf(0);
+        const key = td.decode(d.subarray(0, nul < 0 ? Math.min(20, d.length) : nul));
+        let text = '';
+        if (type === 'tEXt') text = td.decode(d.subarray(nul + 1));
+        else if (type === 'iTXt') {
+          const comp = d[nul + 1];
+          let q = nul + 3; let skips = 0;
+          while (q < d.length && skips < 2) { if (d[q] === 0) skips++; q++; }
+          text = comp === 0 ? td.decode(d.subarray(q)) : '(compressed text)';
+        } else text = '(compressed text)';
+        const isAI = /c2pa|openai|dall|gpt|digitalsourcetype|trainedAlgorithmicMedia/i.test(key + ' ' + text);
+        it = { id:'txt_' + key + '_' + start, label:'Text chunk - "' + esc(key) + '"', checked:true,
+          flag: isAI ? 'ai' : null,
+          desc:'Embedded text metadata' + (isAI ? ' with possible provenance keywords.' : '.'),
+          detail: textDetailHTML('Show contents', text) };
+      } else if (type === 'eXIf') {
+        it = { id:'exif_' + start, label:'EXIF data', checked:true,
+          desc:'Camera/software info, dates, possibly GPS.', detail: exifDetailHTML(data()) };
+      } else if (type === 'caBX') {
+        it = { id:'c2pa_' + start, label:'Content Credentials (C2PA)', checked:true, flag:'ai',
+          desc:'Content Credentials can record provenance and attribution. This tool does not validate signatures.' };
+      } else if (type === 'tIME') {
+        it = { id:'time_' + start, label:'Last-modified timestamp', checked:true, desc:'When the file was last changed.' };
+      } else if (type === 'iCCP' || type === 'sRGB' || type === 'gAMA' || type === 'cHRM') {
+        it = { id:'color_' + type + '_' + start, label:'Color info (' + type + ')', checked:false, flag:'color',
+          desc:'Affects how colors display. Recommended to keep.' };
+      } else {
+        keepRanges.push([start, end]);
+        p = end; continue;
+      }
+      it.ranges = [[start, end]];
+      it.size = end - start;
+      items.push(it);
+      p = end;
+    }
+    return { kind:'PNG', items, keepRanges,
+      rebuild(removedIds) {
+        const parts = [u8.subarray(0, 8)];
+        const all = [];
+        this.keepRanges.forEach(r => all.push({ r, keep: true }));
+        this.items.forEach(it => it.ranges.forEach(r => all.push({ r, keep: !removedIds.has(it.id) })));
+        all.sort((a, b) => a.r[0] - b.r[0]);
+        all.forEach(s => { if (s.keep) parts.push(u8.subarray(s.r[0], s.r[1])); });
+        return new Blob(parts, { type: 'image/png' });
+      }
+    };
+  }
+
+  /* ---------------- WebP parsing ---------------- */
+  function parseWebP(u8) {
+    if (td.decode(u8.subarray(0, 4)) !== 'RIFF' || td.decode(u8.subarray(8, 12)) !== 'WEBP') return null;
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const items = [];
+    const keepChunks = []; // {start,end,fourcc}
+    let p = 12;
+    while (p + 8 <= u8.length) {
+      const fourcc = td.decode(u8.subarray(p, p + 4));
+      const len = dv.getUint32(p + 4, true);
+      const end = p + 8 + len + (len % 2); // padded to even
+      if (end > u8.length + 1) break;
+      if (fourcc === 'EXIF') {
+        items.push({ id:'exif', label:'EXIF data', checked:true, ranges:[[p, Math.min(end, u8.length)]],
+          size: len, desc:'Camera/software info, dates, possibly GPS.',
+          detail: exifDetailHTML(u8.subarray(p + 8, p + 8 + len)) });
+      } else if (fourcc === 'XMP ') {
+        const xml = td.decode(u8.subarray(p + 8, p + 8 + len));
+        const isAI = /c2pa|openai|dall|gpt|digitalsourcetype|trainedAlgorithmicMedia/i.test(xml);
+        items.push({ id:'xmp', label:'XMP metadata', checked:true, flag:isAI ? 'ai' : null,
+          ranges:[[p, Math.min(end, u8.length)]], size: len,
+          desc:'XML metadata, which can include attribution and provenance.',
+          detail: textDetailHTML('Show raw XMP', xml) });
+      } else {
+        keepChunks.push({ start: p, end: Math.min(end, u8.length), fourcc });
+      }
+      p = end;
+    }
+    if (!keepChunks.length) return null;
+    return { kind:'WebP', items, keepChunks,
+      rebuild(removedIds) {
+        const removeExif = removedIds.has('exif'), removeXmp = removedIds.has('xmp');
+        const body = [];
+        this.keepChunks.forEach(c => {
+          let chunk = u8.subarray(c.start, c.end);
+          if (c.fourcc === 'VP8X' && (removeExif || removeXmp)) {
+            chunk = new Uint8Array(chunk);          // copy so we can patch flags
+            if (removeExif) chunk[8] &= ~0x08;
+            if (removeXmp)  chunk[8] &= ~0x04;
+          }
+          body.push(chunk);
+        });
+        this.items.forEach(it => {
+          if (!removedIds.has(it.id)) body.push(u8.subarray(it.ranges[0][0], it.ranges[0][1]));
+        });
+        let size = 4; body.forEach(b => size += b.byteLength);
+        const head = new Uint8Array(12);
+        head.set([0x52,0x49,0x46,0x46], 0);
+        new DataView(head.buffer).setUint32(4, size, true);
+        head.set([0x57,0x45,0x42,0x50], 8);
+        return new Blob([head, ...body], { type: 'image/webp' });
+      }
+    };
+  }
+
+  function mergeItems(items) {
+    // merge multi-segment groups (ICC profiles, C2PA spans) into one row
+    const byId = new Map();
+    items.forEach(it => {
+      if (byId.has(it.id)) {
+        const m = byId.get(it.id);
+        m.ranges.push(...it.ranges);
+        m.size += it.size;
+        if (!m.detail && it.detail) m.detail = it.detail;
+      } else byId.set(it.id, it);
+    });
+    return [...byId.values()];
+  }
+
+  /* ---------------- UI ---------------- */
+  function processFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const u8 = new Uint8Array(reader.result);
+      let parsed = null;
+      try { parsed = parseJPEG(u8) || parsePNG(u8) || parseWebP(u8); } catch (e) { parsed = null; }
+      renderCard(file, u8, parsed);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function renderCard(file, u8, parsed) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const previewUrl = URL.createObjectURL(file);
+    const kind = parsed ? parsed.kind : (file.type || 'image');
+
+    let listHTML = '';
+    if (parsed && parsed.items.length) {
+      listHTML = '<div class="meta-list">' + parsed.items.map((it, i) => {
+        const flag = it.flag === 'ai' ? '<span class="flag ai">Possible provenance</span>'
+                   : it.flag === 'color' ? '<span class="flag">affects color</span>'
+                   : it.flag === 'structural' ? '<span class="flag">structural</span>' : '';
+        return '<div class="meta-row">' +
+          '<div class="meta-row-top">' +
+            '<input type="checkbox" id="cb_' + i + '_' + cardCount + '" data-id="' + esc(it.id) + '"' + (it.checked ? ' checked' : '') + '>' +
+            '<label for="cb_' + i + '_' + cardCount + '">' + it.label + '</label>' +
+            '<span class="size">' + fmtBytes(it.size) + '</span>' + flag +
+          '</div>' +
+          '<div class="desc">' + it.desc + '</div>' +
+          (it.detail || '') +
+        '</div>';
+      }).join('') + '</div>';
+    } else if (parsed) {
+      listHTML = '<div class="none-found">No supported removable blocks found. Unrecognized metadata may still be present.</div>';
+    } else {
+      listHTML = '<div class="none-found">Couldn\'t parse this format for selective editing. Re-encode copy is available if your browser can decode the image.</div>';
+    }
+
+    card.innerHTML =
+      '<div class="card-head"><img src="' + previewUrl + '" alt="">' +
+      '<div class="info"><div class="name">' + esc(file.name) + '</div>' +
+      '<div class="meta">' + esc(kind) + ' · ' + fmtBytes(file.size) + '</div></div></div>' +
+      listHTML +
+      '<div class="card-actions">' +
+        (parsed && parsed.items.length ?
+          '<button class="btn-primary act-download">Download selected removed</button>' +
+          '<button class="btn-quiet act-all">Select all</button>' +
+          '<button class="btn-quiet act-none">Select none</button>' : '') +
+        '<button class="btn-danger act-nuke">Re-encode copy</button>' +
+        '<span class="note">Selected removal preserves compressed image data. Re-encode creates PNG only for PNG inputs; other supported browser inputs become JPEG. Keep your original.</span>' +
+      '</div>';
+    results.appendChild(card);
+    cardCount++;
+
+    const boxes = () => [...card.querySelectorAll('input[type=checkbox]')];
+    const allBtn = card.querySelector('.act-all');
+    if (allBtn) allBtn.addEventListener('click', () => boxes().forEach(b => b.checked = true));
+    const noneBtn = card.querySelector('.act-none');
+    if (noneBtn) noneBtn.addEventListener('click', () => boxes().forEach(b => b.checked = false));
+
+    const dlBtn = card.querySelector('.act-download');
+    if (dlBtn) dlBtn.addEventListener('click', () => {
+      const removed = new Set(boxes().filter(b => b.checked).map(b => b.dataset.id));
+      const blob = parsed.rebuild(removed);
+      triggerDownload(blob, cleanName(file.name, null));
+    });
+
+    card.querySelector('.act-nuke').addEventListener('click', () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        const type = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+        canvas.toBlob(b => { if (b) triggerDownload(b, cleanName(file.name, type)); }, type, 0.92);
+      };
+      img.src = previewUrl;
+    });
+  }
+  let cardCount = 0;
+
+  function cleanName(name, forceType) {
+    const base = name.replace(/\.[^.]+$/, '');
+    const origExt = (name.match(/\.([^.]+)$/) || [,'img'])[1];
+    const ext = forceType === 'image/png' ? 'png' : forceType === 'image/jpeg' ? 'jpg' : origExt;
+    return base + '-clean.' + ext;
+  }
+  function triggerDownload(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+})();
+</script>
+</body>
+</html>
