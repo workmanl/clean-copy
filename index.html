@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clean Copy - Image Metadata Inspector &amp; Stripper</title>
+<title>Clean Copy - Image &amp; Video Metadata Inspector &amp; Stripper</title>
 <style>
   :root {
     --paper: #E9ECEA;
@@ -53,7 +53,7 @@
     overflow: hidden;
   }
   .card-head { display: flex; align-items: center; gap: 16px; padding: 14px 16px; }
-  .card-head img {
+  .card-head img, .card-head video {
     width: 64px; height: 64px; object-fit: cover; border-radius: 4px;
     background: var(--paper); flex-shrink: 0;
   }
@@ -110,19 +110,19 @@
 <div class="wrap">
   <header>
     <h1>Clean Copy</h1>
-    <p>Inspect supported metadata blocks in JPG, PNG and WebP images, then choose which blocks to remove. Selected removal preserves compressed image data without re-encoding. Your files stay in your browser.</p>
+    <p>Inspect supported metadata blocks in JPG, PNG and WebP images and MP4 and MOV videos, then choose which blocks to remove. Selected removal preserves compressed image and video data without re-encoding. Your files stay in your browser.</p>
   </header>
 
-  <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop images">
-    <div class="big">Drop images here</div>
-    <div class="sub">or click to choose files · JPG, PNG, WebP</div>
+  <div id="dropzone" tabindex="0" role="button" aria-label="Choose or drop images or videos">
+    <div class="big">Drop images or videos here</div>
+    <div class="sub">or click to choose files · JPG, PNG, WebP, MP4, MOV</div>
   </div>
-  <input type="file" id="fileinput" accept="image/*" multiple>
+  <input type="file" id="fileinput" accept="image/*,video/mp4,video/quicktime,.mp4,.mov,.m4v" multiple>
 
   <div id="results"></div>
 
   <footer>
-    <p>"Download selected removed" removes the checked blocks without re-encoding image data. Removing orientation or color information can change how an image displays. "Re-encode copy" draws the image through a canvas and exports a new PNG or JPEG, which can change quality, color, transparency or animation. Browser encoders may add basic format metadata. This is not a complete metadata audit or a watermark remover. Content Credentials record provenance; keep an original and preserve attribution and required disclosures when sharing.</p>
+    <p>"Download selected removed" removes the checked blocks without re-encoding image data. Removing orientation or color information can change how an image displays. "Re-encode copy" draws the image through a canvas and exports a new PNG or JPEG, which can change quality, color, transparency or animation. Browser encoders may add basic format metadata. For MP4 and MOV videos, checked blocks are overwritten with empty padding in place, so the audio and video data are not changed. This is not a complete metadata audit or a watermark remover. Content Credentials record provenance; keep an original and preserve attribution and required disclosures when sharing.</p>
   </footer>
 </div>
 
@@ -143,7 +143,7 @@
   dropzone.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
 
   function handleFiles(list) {
-    Array.from(list).forEach(f => { if (f.type.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(f.name)) processFile(f); });
+    Array.from(list).forEach(f => { if (f.type.startsWith('image/') || /^video\/(mp4|quicktime|x-m4v)$/.test(f.type) || /\.(jpe?g|png|webp|mp4|mov|m4v)$/i.test(f.name)) processFile(f); });
   }
 
   function fmtBytes(n) {
@@ -458,6 +458,199 @@
     };
   }
 
+  /* ---------------- MP4 / MOV parsing ---------------- */
+  // Metadata boxes are neutralized in place: the box type becomes 'free' and its payload is
+  // zeroed, so no box sizes or sample offsets move and the audio/video data is untouched.
+  const UUID_C2PA = 'd8fec3d61b0e483c92975828877ec481';
+  const UUID_XMP = 'be7acfcb97a942e89c71999491e3afac';
+  const AI_WORDS = /trainedAlgorithmicMedia|compositeWithTrainedAlgorithmicMedia|synthid|c2pa\.ai|openai|sora|dall-?e|google veo|\bveo\b|kling|runway|midjourney|firefly|gpt-image/i;
+
+  function boxAt(u8, dv, p, end) {
+    if (p + 8 > end) return null;
+    let size = dv.getUint32(p), hdr = 8;
+    const type = String.fromCharCode(u8[p+4], u8[p+5], u8[p+6], u8[p+7]);
+    if (size === 1) {
+      if (p + 16 > end) return null;
+      size = dv.getUint32(p + 8) * 4294967296 + dv.getUint32(p + 12); hdr = 16;
+    } else if (size === 0) size = end - p;
+    if (size < hdr || p + size > end) return null;
+    return { start: p, end: p + size, hdr, type };
+  }
+  function children(u8, dv, from, to) {
+    const out = [];
+    let p = from;
+    while (p + 8 <= to) {
+      const b = boxAt(u8, dv, p, to);
+      if (!b) break;
+      out.push(b);
+      p = b.end;
+    }
+    return out;
+  }
+  function asciiRuns(u8, start, end, min) {
+    // printable strings inside binary payloads, for showing what a block says
+    const runs = [];
+    let s = '';
+    for (let i = start; i < end && runs.length < 4000; i++) {
+      const c = u8[i];
+      if (c >= 0x20 && c < 0x7F) s += String.fromCharCode(c);
+      else { if (s.length >= min) runs.push(s); s = ''; }
+    }
+    if (s.length >= min) runs.push(s);
+    return runs;
+  }
+  const ILST_NAMES = { '©too':'Encoder', '©nam':'Title', '©cmt':'Comment', '©day':'Date',
+    '©ART':'Artist', '©xyz':'GPS location  (!)', '©swr':'Software', '©mak':'Make',
+    '©mod':'Model', '©des':'Description', 'desc':'Description', 'cprt':'Copyright', '©enc':'Encoded by' };
+
+  function readDataValue(u8, dv, b) {
+    // 'data' atom: 4 bytes type indicator + 4 bytes locale, then value
+    const t = dv.getUint32(b.start + 8) & 0xFFFFFF;
+    const v = u8.subarray(b.start + 16, b.end);
+    if (t === 1 || t === 0) return td.decode(v).replace(/\0+$/, '');
+    return '(' + v.length + ' bytes)';
+  }
+  function decodeIlst(u8, dv, ilst, keyNames) {
+    const rows = [];
+    children(u8, dv, ilst.start + ilst.hdr, ilst.end).forEach(item => {
+      let name = item.type;
+      if (keyNames) {
+        const idx = dv.getUint32(item.start + 4);
+        if (keyNames[idx - 1]) name = keyNames[idx - 1];
+      }
+      name = ILST_NAMES[name] || name.replace('com.apple.quicktime.', '');
+      children(u8, dv, item.start + 8, item.end).forEach(d => {
+        if (d.type === 'data' && rows.length < 40) rows.push([name, readDataValue(u8, dv, d)]);
+      });
+    });
+    return rows;
+  }
+  function decodeMetaBox(u8, dv, meta) {
+    // QuickTime meta has no version/flags; ISO meta has 4 bytes of them. Detect by the first child.
+    let from = meta.start + meta.hdr;
+    const probe = boxAt(u8, dv, from, meta.end);
+    if (!probe || !/^(hdlr|keys|ilst|free)$/.test(probe.type)) from += 4;
+    const kids = children(u8, dv, from, meta.end);
+    let keyNames = null;
+    const keys = kids.find(k => k.type === 'keys');
+    if (keys) {
+      keyNames = [];
+      const n = dv.getUint32(keys.start + keys.hdr + 4);
+      let p = keys.start + keys.hdr + 8;
+      for (let i = 0; i < n && p + 8 <= keys.end; i++) {
+        const ks = dv.getUint32(p);
+        if (ks < 8) break;
+        keyNames.push(td.decode(u8.subarray(p + 8, p + ks)));
+        p += ks;
+      }
+    }
+    const ilst = kids.find(k => k.type === 'ilst');
+    return ilst ? decodeIlst(u8, dv, ilst, keyNames) : [];
+  }
+  function rowsDetailHTML(rows, label) {
+    if (!rows.length) return '';
+    return '<details><summary>' + esc(label || 'Show decoded fields') + ' (' + rows.length + ')</summary><table>' +
+      rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join('') + '</table></details>';
+  }
+
+  function parseMP4(u8) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const top = children(u8, dv, 0, u8.length);
+    if (!top.length || !top.some(b => b.type === 'moov') || !/^(ftyp|moov|mdat|free|wide|skip|uuid|pnot)$/.test(top[0].type)) return null;
+    const ftyp = top.find(b => b.type === 'ftyp');
+    const brand = ftyp ? td.decode(u8.subarray(ftyp.start + 8, ftyp.start + 12)) : '';
+    const isMov = brand === 'qt  ';
+    const items = [];
+    const add = (b, it) => { it.ranges = [[b.start, b.end]]; it.size = b.end - b.start; it.box = b; items.push(it); };
+
+    const scanUdta = (b, where) => {
+      const rows = [];
+      children(u8, dv, b.start + b.hdr, b.end).forEach(k => {
+        if (k.type === 'meta') rows.push(...decodeMetaBox(u8, dv, k));
+        else if (k.type.charCodeAt(0) === 0xA9 && rows.length < 40) {
+          // classic QuickTime text atom: 2-byte length, 2-byte language, text
+          const len = dv.getUint16(k.start + 8);
+          rows.push([ILST_NAMES[k.type] || k.type, td.decode(u8.subarray(k.start + 12, Math.min(k.start + 12 + len, k.end)))]);
+        }
+      });
+      const text = rows.map(r => r.join(' ')).join(' ');
+      return { rows, ai: AI_WORDS.test(text) };
+    };
+
+    top.forEach(b => {
+      if (b.type === 'uuid') {
+        const id = Array.from(u8.subarray(b.start + b.hdr, b.start + b.hdr + 16)).map(x => x.toString(16).padStart(2, '0')).join('');
+        if (id === UUID_C2PA) {
+          const found = [...new Set(asciiRuns(u8, b.start, b.end, 5).join(' ').match(new RegExp(AI_WORDS.source, 'gi')) || [])];
+          add(b, { id: 'c2pa_' + b.start, label: 'Content Credentials (C2PA)', checked: true, flag: 'ai',
+            desc: 'Signed provenance manifest' + (found.length ? ' mentioning: ' + esc(found.join(', ')) + '.' : '.') +
+              ' Removal discards the provenance record; this tool does not validate signatures.' });
+        } else if (id === UUID_XMP) {
+          const xml = td.decode(u8.subarray(b.start + b.hdr + 16, b.end));
+          add(b, { id: 'xmp_' + b.start, label: 'XMP metadata', checked: true, flag: AI_WORDS.test(xml) ? 'ai' : null,
+            desc: 'XML metadata, which can include attribution and digital source information.',
+            detail: textDetailHTML('Show raw XMP', xml) });
+        } else {
+          add(b, { id: 'uuid_' + b.start, label: 'Vendor UUID block', checked: false,
+            desc: 'Unrecognized vendor data (' + id.slice(0, 8) + '...). Usually safe to remove; review first.' });
+        }
+      } else if (b.type === 'meta') {
+        add(b, { id: 'meta_' + b.start, label: 'File-level metadata', checked: true,
+          detail: rowsDetailHTML(decodeMetaBox(u8, dv, b)), desc: 'Metadata box at the top level of the file.' });
+      } else if (b.type === 'moov') {
+        children(u8, dv, b.start + b.hdr, b.end).forEach(k => {
+          if (k.type === 'udta') {
+            const s = scanUdta(k);
+            add(k, { id: 'udta_' + k.start, label: 'Movie tags (user data)', checked: true, flag: s.ai ? 'ai' : null,
+              desc: 'Encoder, title, comments, dates and possibly GPS location.', detail: rowsDetailHTML(s.rows) });
+          } else if (k.type === 'meta') {
+            const rows = decodeMetaBox(u8, dv, k);
+            add(k, { id: 'qtmeta_' + k.start, label: 'QuickTime metadata', checked: true,
+              flag: AI_WORDS.test(rows.map(r => r.join(' ')).join(' ')) ? 'ai' : null,
+              desc: 'Key/value tags such as camera make and model, creation date, software and location.',
+              detail: rowsDetailHTML(rows) });
+          } else if (k.type === 'trak') {
+            children(u8, dv, k.start + k.hdr, k.end).forEach(t => {
+              if (t.type === 'udta' || t.type === 'meta') {
+                const s = t.type === 'udta' ? scanUdta(t) : { rows: decodeMetaBox(u8, dv, t), ai: false };
+                add(t, { id: 'trak_' + t.type + '_' + t.start, label: 'Track tags', checked: true, flag: s.ai ? 'ai' : null,
+                  desc: 'Per-track user data or metadata.', detail: rowsDetailHTML(s.rows) });
+              }
+            });
+          }
+        });
+      }
+    });
+    // several track-tag rows read better as one
+    const trakRows = items.filter(it => it.id.startsWith('trak_'));
+    if (trakRows.length > 1) {
+      const first = trakRows[0];
+      trakRows.slice(1).forEach(t => { first.ranges.push(...t.ranges); first.size += t.size; items.splice(items.indexOf(t), 1); });
+      first.id = 'trak_all';
+    }
+    return { kind: isMov ? 'MOV' : 'MP4', video: true, items,
+      rebuild(removedIds) {
+        const cut = [];
+        this.items.forEach(it => { if (removedIds.has(it.id)) it.ranges.forEach(r => cut.push(r)); });
+        cut.sort((a, b) => a[0] - b[0]);
+        const parts = [];
+        let p = 0;
+        cut.forEach(([s, e]) => {
+          if (s < p) return;                                   // nested inside an already-cleared box
+          parts.push(u8.subarray(p, s));
+          const b = boxAt(u8, dv, s, e);
+          const pad = new Uint8Array(e - s);                   // same size, zeroed payload
+          pad.set(u8.subarray(s, s + b.hdr));                  // keep the size field(s)
+          pad.set([0x66, 0x72, 0x65, 0x65], 4);                // type = 'free'
+          parts.push(pad);
+          p = e;
+        });
+        parts.push(u8.subarray(p));
+        return new Blob(parts, { type: isMov ? 'video/quicktime' : 'video/mp4' });
+      }
+    };
+  }
+
   function mergeItems(items) {
     // merge multi-segment groups (ICC profiles, C2PA spans) into one row
     const byId = new Map();
@@ -478,7 +671,7 @@
     reader.onload = () => {
       const u8 = new Uint8Array(reader.result);
       let parsed = null;
-      try { parsed = parseJPEG(u8) || parsePNG(u8) || parseWebP(u8); } catch (e) { parsed = null; }
+      try { parsed = parseJPEG(u8) || parsePNG(u8) || parseWebP(u8) || parseMP4(u8); } catch (e) { parsed = null; }
       renderCard(file, u8, parsed);
     };
     reader.readAsArrayBuffer(file);
@@ -489,6 +682,7 @@
     card.className = 'card';
     const previewUrl = URL.createObjectURL(file);
     const kind = parsed ? parsed.kind : (file.type || 'image');
+    const isVideo = (parsed && parsed.video) || file.type.startsWith('video/');
 
     let listHTML = '';
     if (parsed && parsed.items.length) {
@@ -509,11 +703,11 @@
     } else if (parsed) {
       listHTML = '<div class="none-found">No supported removable blocks found. Unrecognized metadata may still be present.</div>';
     } else {
-      listHTML = '<div class="none-found">Couldn\'t parse this format for selective editing. Re-encode copy is available if your browser can decode the image.</div>';
+      listHTML = '<div class="none-found">' + (isVideo ? 'Couldn\'t parse this video container. Only MP4, MOV and M4V are supported.' : 'Couldn\'t parse this format for selective editing. Re-encode copy is available if your browser can decode the image.') + '</div>';
     }
 
     card.innerHTML =
-      '<div class="card-head"><img src="' + previewUrl + '" alt="">' +
+      '<div class="card-head">' + (isVideo ? '<video src="' + previewUrl + '" muted playsinline preload="metadata"></video>' : '<img src="' + previewUrl + '" alt="">') +
       '<div class="info"><div class="name">' + esc(file.name) + '</div>' +
       '<div class="meta">' + esc(kind) + ' · ' + fmtBytes(file.size) + '</div></div></div>' +
       listHTML +
@@ -522,8 +716,8 @@
           '<button class="btn-primary act-download">Download selected removed</button>' +
           '<button class="btn-quiet act-all">Select all</button>' +
           '<button class="btn-quiet act-none">Select none</button>' : '') +
-        '<button class="btn-danger act-nuke">Re-encode copy</button>' +
-        '<span class="note">Selected removal preserves compressed image data. Re-encode creates PNG only for PNG inputs; other supported browser inputs become JPEG. Keep your original.</span>' +
+        (isVideo ? '' : '<button class="btn-danger act-nuke">Re-encode copy</button>') +
+        '<span class="note">' + (isVideo ? 'Checked blocks are overwritten with empty padding in place. Video and audio data are untouched, nothing is re-encoded, and the file size stays the same. Invisible pixel watermarks such as SynthID are not removed. Keep your original.' : 'Selected removal preserves compressed image data. Re-encode creates PNG only for PNG inputs; other supported browser inputs become JPEG. Keep your original.') + '</span>' +
       '</div>';
     results.appendChild(card);
     cardCount++;
@@ -541,7 +735,8 @@
       triggerDownload(blob, cleanName(file.name, null));
     });
 
-    card.querySelector('.act-nuke').addEventListener('click', () => {
+    const nukeBtn = card.querySelector('.act-nuke');
+    if (nukeBtn) nukeBtn.addEventListener('click', () => {
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
